@@ -1,4 +1,8 @@
 # Sample configuration
-[settings]
-temperature = 300
+[system-settings]
+temperature = 300.0
 pressure = 1.0
+sterics_lambdas = [0.0, 1.0]
+electrostatics_lambdas = [0.0, 1.0]
+file_name = "../ethanol.pdb"
+smiles = "CCO"
