@@ -21,7 +21,7 @@ def setup_logging():
 def main():
     setup_logging()
 
-    parser = argparse.ArgumentParser(description="CLI App with TOML Config")
+    parser = argparse.ArgumentParser(description="Calculate FEP")
     parser.add_argument(
         "-c",
         "--config",
