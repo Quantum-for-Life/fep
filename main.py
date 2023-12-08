@@ -2,13 +2,26 @@ import sys
 import argparse
 import tomllib
 import logging
+from pydantic import BaseModel, ValidationError
+
+# from pymbar import MBAR, timeseries
+
+
+# Define a Pydantic model for configuration
+class Settings(BaseModel):
+    temperature: float
+    pressure: float
 
 
 def load_config(file_path):
-    """Load configuration from a TOML file."""
-    with open(file_path, "rb") as file:
-        config = tomllib.load(file)
-    return config
+    """Load and validate configuration from a TOML file using Pydantic."""
+    try:
+        with open(file_path, "rb") as file:
+            config_data = tomllib.load(file)
+        return Settings(**config_data["settings"])
+    except ValidationError as e:
+        logging.error("Configuration validation error: %s", e)
+        raise
 
 
 def setup_logging():
@@ -33,10 +46,10 @@ def main():
 
     config = load_config(args.config)
 
-    logging.info("Configuration loaded:", config)
+    logging.info(f"Configuration loaded and validated: {config}")
 
-    logging.info(f"Temperature value: {config['settings']['temperature']}")
-    logging.info(f"Temperature value: {config['settings']['pressure']}")
+    logging.info(f"Temperature value: {config.temperature}")
+    logging.info(f"Temperature value: {config.pressure}")
 
 
 if __name__ == "__main__":
