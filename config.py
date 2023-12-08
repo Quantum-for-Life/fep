@@ -5,7 +5,6 @@ from pydantic import BaseModel, ValidationError
 from pydantic import NonNegativeFloat, FilePath
 
 
-
 class SystemSettings(BaseModel):
     file_name: FilePath
     smiles: str
@@ -23,5 +22,5 @@ def load_config(file_path) -> SystemSettings:
             if "system-settings" in config_data:
                 return SystemSettings(**config_data["system-settings"])
     except ValidationError as e:
-        logging.error("Configuration validation error: %s", e)
+        logging.error("Configuration validation error: %s", e.errors())
         raise
