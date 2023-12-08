@@ -50,6 +50,32 @@ def setup_logging():
     )
 
 
+class LambdaScheme:
+    def __init__(
+        self,
+        steric_lambdas,
+        electrostatic_lambdas,
+    ):
+        self._steric_lambdas = steric_lambdas
+        # to avoid calculating the same lambda state twice
+        if electrostatic_lambdas[-1] == 0.0:
+            self._electrostatic_lambdas = electrostatic_lambdas[:-1]
+        else:
+            self._electrostatic_lambdas = electrostatic_lambdas
+
+        sterics = np.zeros(len(self._steric_lambdas) + len(self._electrostatic_lambdas))
+        electrostatics = sterics.copy()
+        sterics[: len(self._electrostatic_lambdas)] = 1.0
+        sterics[len(self._electrostatic_lambdas) :] = self._steric_lambdas
+        electrostatics[: len(self._electrostatic_lambdas)] = self._electrostatic_lambdas
+        electrostatics[len(self._electrostatic_lambdas) :] = 0.0
+        self._lambda_scheme = list(zip(sterics, electrostatics))
+
+    @property
+    def lambda_scheme(self):
+        return self._lambda_scheme
+
+
 def create_alchemical_system(
     molecule_file: openmm.app.pdbfile.PDBFile,
     forcefield: openmm.app.ForceField,
