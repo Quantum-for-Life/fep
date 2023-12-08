@@ -6,7 +6,7 @@ import logging
 
 def load_config(file_path):
     """Load configuration from a TOML file."""
-    with open(file_path, "r") as file:
+    with open(file_path, "rb") as file:
         config = tomllib.load(file)
     return config
 
@@ -35,8 +35,8 @@ def main():
 
     logging.info("Configuration loaded:", config)
 
-    logging.info("Temperature value:", config["settings"]["temperature"])
-    logging.info("Pressure value:", config["settings"]["pressure"])
+    logging.info(f"Temperature value: {config['settings']['temperature']}")
+    logging.info(f"Temperature value: {config['settings']['pressure']}")
 
 
 if __name__ == "__main__":
