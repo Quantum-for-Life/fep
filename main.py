@@ -43,7 +43,7 @@ from openmm.unit import (
 )
 
 
-def setup_logging():
+def setup_logging() -> None:
     """Setup basic logging configuration."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
