@@ -1,0 +1,4 @@
+# Sample configuration
+[settings]
+temperature = 300
+pressure = 1.0
