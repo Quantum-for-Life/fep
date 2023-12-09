@@ -3,7 +3,7 @@ import logging
 from typing import List
 from pydantic import BaseModel, ValidationError, field_validator
 from pydantic import NonNegativeFloat, FilePath
-from openmm.unit import kelvin, atmospheres
+from openmm.unit import kelvin, atmospheres, femtoseconds
 
 
 class SystemSettings(BaseModel):
@@ -11,6 +11,7 @@ class SystemSettings(BaseModel):
     smiles: str
     temperature: NonNegativeFloat
     pressure: NonNegativeFloat
+    time_step: NonNegativeFloat
     sterics_lambdas: List[NonNegativeFloat]
     electrostatics_lambdas: List[NonNegativeFloat]
 
@@ -23,6 +24,11 @@ class SystemSettings(BaseModel):
     @classmethod
     def convert_to_atm(cls, v: NonNegativeFloat) -> NonNegativeFloat:
         return v * atmospheres
+
+    @field_validator("time_step")
+    @classmethod
+    def convert_to_atm(cls, v: NonNegativeFloat) -> NonNegativeFloat:
+        return v * femtoseconds
 
 
 def load_config(file_path) -> SystemSettings:
