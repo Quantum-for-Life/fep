@@ -1,5 +1,9 @@
 [system-settings]
+# units are hardcoded
+
+# unit: kelvin
 temperature = 300.0
+# unit: atmospheres
 pressure = 1.0
 sterics_lambdas = [0.0, 1.0]
 electrostatics_lambdas = [0.0, 1.0]
