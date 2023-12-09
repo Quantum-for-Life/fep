@@ -2,7 +2,7 @@ import tomllib
 import logging
 from typing import List
 from pydantic import BaseModel, ValidationError, field_validator
-from pydantic import NonNegativeFloat, FilePath
+from pydantic import NonNegativeFloat, NonNegativeInt, FilePath
 from openmm.unit import kelvin, atmospheres, femtoseconds
 
 
@@ -12,6 +12,8 @@ class SystemSettings(BaseModel):
     temperature: NonNegativeFloat
     pressure: NonNegativeFloat
     time_step: NonNegativeFloat
+    equilibration_per_window: NonNegativeInt
+    sampling_per_window: NonNegativeInt
     sterics_lambdas: List[NonNegativeFloat]
     electrostatics_lambdas: List[NonNegativeFloat]
 
@@ -27,7 +29,7 @@ class SystemSettings(BaseModel):
 
     @field_validator("time_step")
     @classmethod
-    def convert_to_atm(cls, v: NonNegativeFloat) -> NonNegativeFloat:
+    def convert_to_femtoseconds(cls, v: NonNegativeFloat) -> NonNegativeFloat:
         return v * femtoseconds
 
 
@@ -38,6 +40,8 @@ def load_config(file_path) -> SystemSettings:
             config_data = tomllib.load(file)
             if "system-settings" in config_data:
                 return SystemSettings(**config_data["system-settings"])
+            else:
+                raise ValueError("missing system-settings in config file")
     except ValidationError as e:
         logging.error("Configuration validation error: %s", e.errors())
         raise
