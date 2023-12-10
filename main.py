@@ -7,7 +7,7 @@ import logging
 import sys
 import time
 
-# from pymbar import MBAR, timeseries
+from pymbar import MBAR, timeseries
 import numpy as np
 from openff.toolkit import Molecule
 import mdtraj
@@ -48,6 +48,7 @@ from openmm.unit import (
 
 from config import SystemSettings
 
+STEPS_PER_ITER: int = 1024
 
 
 def setup_logging(loglevel: str) -> logging.Logger:
@@ -238,7 +239,8 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     logger = logging.getLogger(__name__)
     nlambda = len(lambda_scheme)
     nstates = len(lambda_scheme)
-    # u_kln = np.zeros([nstates, nstates, niter], np.float64)
+    u_kln = np.zeros([nstates, nstates, alchemical_system.niter], np.float64)
+    beta = 1.0 / (BOLTZMANN_CONSTANT_kB * alchemical_system.temperature)
 
     nvt_sim, nvt_integrator = alchemical_system.build_simulation(
         alchemical_system.NVT_alchemical_system
@@ -250,7 +252,9 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     npt_steps = int(alchemical_system.equili_steps)
 
     # Iterate over alchemical states
-    for i, (sterics_lambda, electrostatic_lambda) in enumerate(lambda_scheme):
+    for i, (steric_l_i, electrostatic_l_i) in enumerate(lambda_scheme):
+        logger.debug("Sterics lambda i: %1.3f", steric_l_i)
+        logger.debug("Electrostatics lambda i: %1.3f", electrostatic_l_i)
         # init position of atoms
         nvt_sim.context.setPositions(alchemical_system.og_positions)
         npt_sim.context.setPositions(alchemical_system.og_positions)
@@ -259,14 +263,14 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         _apply_context(
             alchemical_system.NVT_compound_state,
             nvt_sim.context,
-            sterics_lambda,
-            electrostatic_lambda,
+            steric_l_i,
+            electrostatic_l_i,
         )
         _apply_context(
             alchemical_system.NPT_compound_state,
             npt_sim.context,
-            sterics_lambda,
-            electrostatic_lambda,
+            steric_l_i,
+            electrostatic_l_i,
         )
 
         # init size of box, NVT never changes so dont need to init every state
@@ -309,9 +313,60 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         tock = time.perf_counter()
         logger.info("Took %1.4f seconds", tock - tic)
 
-        # # Production
-        # for iteration in range(niter):
-        #     ...
+        # Production
+        for iteration in range(alchemical_system.niter):
+            logger.info(
+                "Propagating iteration %d/%d in window %d/%d",
+                iteration + 1,
+                alchemical_system.niter,
+                i + 1,
+                len(lambda_scheme),
+            )
+            # propagate system in current state
+            npt_sim.step(STEPS_PER_ITER)
+
+            for j, (steric_l_j, electrostatic_l_j) in enumerate(lambda_scheme):
+                logger.debug("Sterics lambda j: %1.3f", steric_l_j)
+                logger.debug("Electrostatics lambda j: %1.3f", electrostatic_l_j)
+                _apply_context(
+                    alchemical_system.NPT_compound_state,
+                    npt_sim.context,
+                    steric_l_j,
+                    electrostatic_l_j,
+                )
+                state = npt_sim.context.getState(getEnergy=True)
+                volume = state.getPeriodicBoxVolume()
+                potential = state.getPotentialEnergy() / AVOGADRO_CONSTANT_NA
+                u_kln[i, j, iteration] = beta * (
+                    potential + alchemical_system.pressure * volume
+                )
+            # recover alchemical state
+            _apply_context(
+                alchemical_system.NPT_compound_state,
+                npt_sim.context,
+                steric_l_i,
+                electrostatic_l_i,
+            )
+    # Subsample data to extract uncorrelated equilibrium timeseries
+    N_k = np.zeros([nstates], np.int32)  # number of uncorrelated samples
+    for k in range(nstates):
+        [nequil, g, Neff_max] = timeseries.detect_equilibration(u_kln[k, k, :])
+        indices = timeseries.subsample_correlated_data(u_kln[k, k, :], g=g)
+        N_k[k] = len(indices)
+        u_kln[k, :, 0 : N_k[k]] = u_kln[k, :, indices].T
+
+    # Compute free energy differences
+    mbar = MBAR(u_kln, N_k)
+
+    # computing uncertainties may fail with an error for
+    # pymbar versions > 3.0.3. See this issue: https://github.com/choderalab/pymbar/issues/419
+    results = mbar.compute_free_energy_differences(compute_uncertainty=True)
+
+    logger.info(
+        "Free energy change to insert a particle = %1.16f",
+        results["Delta_f"][nstates - 1, 0],
+    )
+    logger.info("Statistical uncertainty = %1.16f", results["dDelta_f"][nstates - 1, 0])
 
 
 def main():
