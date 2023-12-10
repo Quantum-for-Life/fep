@@ -17,6 +17,14 @@ class SystemSettings(BaseModel):
     sterics_lambdas: List[NonNegativeFloat]
     electrostatics_lambdas: List[NonNegativeFloat]
 
+    @field_validator("sterics_lambdas", "electrostatics_lambdas")
+    @classmethod
+    def verify_lambdas(cls, v: List[NonNegativeFloat]) -> List[NonNegativeFloat]:
+        is_valid = all([(x <= 1.0) & (x >= 0.0) for x in v])
+        if not is_valid:
+            raise ValueError(f"values not between 0.0 and 1.0")
+        return v
+
     @field_validator("temperature")
     @classmethod
     def convert_to_kelvin(cls, v: NonNegativeFloat) -> NonNegativeFloat:
