@@ -49,7 +49,8 @@ from openmm.unit import (
 from config import SystemSettings
 
 
-def setup_logging() -> logging.Logger:
+
+def setup_logging(loglevel: str) -> logging.Logger:
     """Setup basic logging configuration."""
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
@@ -314,8 +315,6 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
 
 
 def main():
-    logger = setup_logging()
-
     parser = argparse.ArgumentParser(description="Calculate FEP")
     parser.add_argument(
         "-c",
@@ -324,7 +323,15 @@ def main():
         default="config.toml",
         help="Path to the configuration file.",
     )
+    parser.add_argument(
+        "-log",
+        "--loglevel",
+        type=str,
+        default="info",
+        help="Provide logging level. Example --loglevel debug, default=info",
+    )
     args = parser.parse_args()
+    logger = setup_logging(level=args.loglevel.upper())
 
     cfg = config.load_config(args.config)
     logger.info(f"Configuration loaded and validated: {cfg}")
