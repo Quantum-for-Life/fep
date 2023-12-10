@@ -1,17 +1,19 @@
 import tomllib
 import logging
+from typing import Annotated
 from typing import List
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, Field
 from pydantic import NonNegativeFloat, NonNegativeInt, FilePath
 from openmm.unit import kelvin, atmospheres, femtoseconds
+from openmm import unit
 
 
 class SystemSettings(BaseModel):
     file_name: FilePath
     smiles: str
-    temperature: NonNegativeFloat
-    pressure: NonNegativeFloat
-    time_step: NonNegativeFloat
+    temperature: dict
+    pressure: dict
+    time_step: dict
     equilibration_per_window: NonNegativeInt
     sampling_per_window: NonNegativeInt
     sterics_lambdas: List[NonNegativeFloat]
@@ -25,20 +27,10 @@ class SystemSettings(BaseModel):
             raise ValueError(f"values not between 0.0 and 1.0")
         return v
 
-    @field_validator("temperature")
+    @field_validator("temperature", "pressure", "time_step")
     @classmethod
-    def convert_to_kelvin(cls, v: NonNegativeFloat) -> NonNegativeFloat:
-        return v * kelvin
-
-    @field_validator("pressure")
-    @classmethod
-    def convert_to_atm(cls, v: NonNegativeFloat) -> NonNegativeFloat:
-        return v * atmospheres
-
-    @field_validator("time_step")
-    @classmethod
-    def convert_to_femtoseconds(cls, v: NonNegativeFloat) -> NonNegativeFloat:
-        return v * femtoseconds
+    def validate_physical_unit(cls, v: dict) -> unit.Quantity:
+        return unit.Quantity(NonNegativeFloat(v["target"]), getattr(unit, v["unit"]))
 
 
 def load_config(file_path) -> SystemSettings:

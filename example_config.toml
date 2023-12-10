@@ -1,15 +1,10 @@
 [system-settings]
-# units are hardcoded
-
-# unit: kelvin
-temperature = 300.0
-# unit: atmospheres
-pressure = 1.0
-# unit: fs
-time_step = 2.0
-equilibration_per_window = 128
-sampling_per_window = 128
-sterics_lambdas = [0.0, 0.5, 1.0]
-electrostatics_lambdas = [0.0, 0.1, 0.2, 0.8, 0.9, 1.0]
+temperature = { target = 300.0, unit = "kelvin" }
+pressure = { target = 1.0, unit = "atmospheres" }
+time_step = { target = 2.0, unit = "femtoseconds" }
+equilibration_per_window = 1024
+sampling_per_window = 500
+sterics_lambdas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+electrostatics_lambdas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 file_name = "./ethanol.pdb"
 smiles = "CCO"
