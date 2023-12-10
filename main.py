@@ -346,28 +346,6 @@ def main():
     lambda_scheme = LambdaScheme(cfg.sterics_lambdas, cfg.electrostatics_lambdas)
     run_simulation(alchemical_system, lambda_scheme)
 
-    # simulation = Simulation(
-    #     modeller.topology,
-    #     alchemical_system,
-    #     integrator,
-    #     platform=Platform.getPlatformByName("CUDA"),
-    #     platformProperties={"CudaPrecision": "mixed"},
-    # )
-    # simulation.context.setPositions(modeller.positions)
-    # simulation.reporters.append(PDBReporter("output.pdb", 512))
-    # simulation.reporters.append(
-    #     StateDataReporter(
-    #         "md_log.txt",
-    #         512,
-    #         step=True,
-    #         potentialEnergy=True,
-    #         temperature=True,
-    #         volume=True,
-    #     )
-    # )
-    # print("Minimizing energy")
-    # simulation.minimizeEnergy()
-
 
 if __name__ == "__main__":
     sys.exit(main())
