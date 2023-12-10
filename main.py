@@ -1,13 +1,11 @@
-from typing import Tuple, Iterator
-from collections.abc import Iterable
-from config import SystemSettings
 from pathlib import PosixPath
+from typing import Tuple, Iterator, Type
 import argparse
 import config
 import copy
 import logging
 import sys
-from typing import Type
+import time
 
 # from pymbar import MBAR, timeseries
 import numpy as np
@@ -48,19 +46,30 @@ from openmm.unit import (
     picoseconds,
 )
 
+from config import SystemSettings
+
 
 def setup_logging() -> logging.Logger:
     """Setup basic logging configuration."""
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
+    # log to out
     stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
     logger.addHandler(stream_handler)
-    # logger.addHandler(file_handler)
+
+    logger.propagate = False  # to stop duplicate log entries
+
+    # # log to file
     # file_handler = logging.FileHandler("file.log")
+    # file_handler.setFormatter(
+    #     logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    # )
+    # logger.addHandler(file_handler)
     return logger
 
 
