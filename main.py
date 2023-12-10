@@ -49,11 +49,19 @@ from openmm.unit import (
 )
 
 
-def setup_logging() -> None:
+def setup_logging() -> logging.Logger:
     """Setup basic logging configuration."""
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
+    logger.addHandler(stream_handler)
+    # logger.addHandler(file_handler)
+    # file_handler = logging.FileHandler("file.log")
+    return logger
 
 
 class LambdaScheme:
@@ -185,10 +193,16 @@ class AlchemicalSystem:
 def load_small_molecule(
     file_name: PosixPath, smiles: str, forcefield: openmm.app.ForceField
 ) -> None:
-    if file_name.suffix == ".pdb":
-        loaded_molecule = PDBFile(f"{file_name}")
-    else:
-        raise ValueError(f"file format not implemented: {file_name}")
+    logger = logging.getLogger(__name__)
+
+    try:
+        if file_name.suffix == ".pdb":
+            loaded_molecule = PDBFile(f"{file_name}")
+        else:
+            raise ValueError(f"file format not implemented: {file_name}")
+    except ValueError as e:
+        logger.exception("ValueError")
+        raise
 
     molecule = Molecule.from_smiles(f"{smiles}")
     gaff = GAFFTemplateGenerator(molecules=molecule)
@@ -217,7 +231,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
 
 
 def main():
-    setup_logging()
+    logger = setup_logging()
 
     parser = argparse.ArgumentParser(description="Calculate FEP")
     parser.add_argument(
@@ -230,7 +244,7 @@ def main():
     args = parser.parse_args()
 
     cfg = config.load_config(args.config)
-    logging.info(f"Configuration loaded and validated: {cfg}")
+    logger.info(f"Configuration loaded and validated: {cfg}")
 
     forcefield = ForceField("tip4pew.xml")
     loaded_molecule = load_small_molecule(cfg.file_name, cfg.smiles, forcefield)
