@@ -51,14 +51,14 @@ from config import SystemSettings
 STEPS_PER_ITER: int = 1024
 
 
-def setup_logging(loglevel: str) -> logging.Logger:
+def setup_logging(level: str) -> logging.Logger:
     """Setup basic logging configuration."""
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
     # log to out
     stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
+    stream_handler.setLevel(level=level)
     stream_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
