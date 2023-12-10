@@ -123,6 +123,8 @@ class AlchemicalSystem:
         self.temperature = system_settings.temperature
         self.time_step = system_settings.time_step
         self.friction = 1 / picoseconds
+        self.equili_steps = system_settings.equilibration_per_window
+        self.niter = system_settings.sampling_per_window
 
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
         modeller.addSolvent(forcefield, padding=1.1 * nanometer, model="tip4pew")
@@ -220,7 +222,19 @@ def load_small_molecule(
     return loaded_molecule
 
 
+def _apply_context(
+    compound_state: openmmtools.states.CompoundThermodynamicState,
+    context: openmm.Context,
+    steric: float,
+    electrostatic: float,
+) -> None:
+    compound_state.lambda_sterics = steric
+    compound_state.lambda_electrostatics = electrostatic
+    compound_state.apply_to_context(context)
+
+
 def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaScheme):
+    logger = logging.getLogger(__name__)
     nlambda = len(lambda_scheme)
     nstates = len(lambda_scheme)
     # u_kln = np.zeros([nstates, nstates, niter], np.float64)
@@ -231,12 +245,72 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     npt_sim, npt_integrator = alchemical_system.build_simulation(
         alchemical_system.NPT_alchemical_system
     )
+    nvt_steps = int(alchemical_system.equili_steps * 0.01)
+    npt_steps = int(alchemical_system.equili_steps)
 
     # Iterate over alchemical states
     for i, (sterics_lambda, electrostatic_lambda) in enumerate(lambda_scheme):
         # init position of atoms
         nvt_sim.context.setPositions(alchemical_system.og_positions)
         npt_sim.context.setPositions(alchemical_system.og_positions)
+
+        # init lambda state
+        _apply_context(
+            alchemical_system.NVT_compound_state,
+            nvt_sim.context,
+            sterics_lambda,
+            electrostatic_lambda,
+        )
+        _apply_context(
+            alchemical_system.NPT_compound_state,
+            npt_sim.context,
+            sterics_lambda,
+            electrostatic_lambda,
+        )
+
+        # init size of box, NVT never changes so dont need to init every state
+        # npt_sim.context.setPeriodicBoxVectors(*alch_sys.PBV)
+
+        # preproduction: minimize and equilibriate
+        logger.info("Minimizing")
+        openmm.LocalEnergyMinimizer.minimize(nvt_sim.context)
+
+        # NVT
+        logger.info("Performing NVT equilibration for %s", nvt_steps * 2 * femtoseconds)
+        tic = time.perf_counter()
+
+        # NVT warming
+        final_temperature = nvt_integrator.getTemperature() / kelvin
+        initial_temperature = 50
+        nvt_sim.context.setVelocitiesToTemperature(initial_temperature)
+        temps = np.linspace(initial_temperature, final_temperature, 10)
+        logger.info(
+            "Warming NVT from %1.4fk to %1.4fk", initial_temperature, final_temperature
+        )
+        for temp in temps:
+            nvt_integrator.setTemperature(temp)
+            nvt_integrator.step(int(nvt_steps / len(temps)))
+        tock = time.perf_counter()
+        logger.info("Took %1.4f seconds", tock - tic)
+
+        # save positions and velocities to transfer to NPT system
+        pos_vel = nvt_sim.context.getState(getPositions=True, getVelocities=True)
+        pos, vel = pos_vel.getPositions(), pos_vel.getVelocities()
+
+        # NPT
+        # Set equilibriated pos and vel in NPT context
+        npt_sim.context.setPositions(pos)
+        npt_sim.context.setVelocities(vel)
+
+        logger.info("Performing NPT equilibration for %s", npt_steps * 2 * femtoseconds)
+        tic = time.perf_counter()
+        npt_sim.step(npt_steps)
+        tock = time.perf_counter()
+        logger.info("Took %1.4f seconds", tock - tic)
+
+        # # Production
+        # for iteration in range(niter):
+        #     ...
 
 
 def main():
