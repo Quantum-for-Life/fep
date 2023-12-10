@@ -5,6 +5,7 @@ import config
 import copy
 import logging
 import sys
+from sys import stdout
 import time
 
 from pymbar import MBAR, timeseries
@@ -49,6 +50,7 @@ from openmm.unit import (
 from config import SystemSettings
 
 STEPS_PER_ITER: int = 1024
+INITIAL_TEMPERATURE = 50
 
 
 def setup_logging(level: str) -> logging.Logger:
@@ -144,7 +146,7 @@ class AlchemicalSystem:
             switchDistance=0.9 * nanometer,
             constraints=HBonds,
             rigidWater=True,
-            hydrogenMass=1.5 * amu,
+            hydrogenMass=3.0 * amu,
         )
         logging.info(msg="Default box vectors")
         for axis in system.getDefaultPeriodicBoxVectors():
@@ -235,6 +237,29 @@ def _apply_context(
     compound_state.apply_to_context(context)
 
 
+def _add_reporter(simulation: openmm.app.Simulation):
+    simulation.reporters.append(
+        openmm.app.StateDataReporter(
+            stdout,
+            reportInterval=5000,
+            step=True,
+            potentialEnergy=True,
+            kineticEnergy=True,
+            volume=True,
+            temperature=True,
+            # progress=True,
+            # remainingTime=True,
+            speed=True,
+            separator="\t",
+        )
+    )
+
+
+def _remove_reporters(simulation: openmm.app.Simulation) -> None:
+    del simulation.reporters
+    simulation.reporters = []
+
+
 def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaScheme):
     logger = logging.getLogger(__name__)
     nlambda = len(lambda_scheme)
@@ -276,6 +301,9 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         # init size of box, NVT never changes so dont need to init every state
         # npt_sim.context.setPeriodicBoxVectors(*alch_sys.PBV)
 
+        _add_reporter(nvt_sim)
+        _add_reporter(npt_sim)
+
         # preproduction: minimize and equilibriate
         logger.info("Minimizing")
         openmm.LocalEnergyMinimizer.minimize(nvt_sim.context)
@@ -286,11 +314,10 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
 
         # NVT warming
         final_temperature = nvt_integrator.getTemperature() / kelvin
-        initial_temperature = 50
-        nvt_sim.context.setVelocitiesToTemperature(initial_temperature)
-        temps = np.linspace(initial_temperature, final_temperature, 10)
+        nvt_sim.context.setVelocitiesToTemperature(INITIAL_TEMPERATURE)
+        temps = np.linspace(INITIAL_TEMPERATURE, final_temperature, 10)
         logger.info(
-            "Warming NVT from %1.4fk to %1.4fk", initial_temperature, final_temperature
+            "Warming NVT from %1.4fk to %1.4fk", INITIAL_TEMPERATURE, final_temperature
         )
         for temp in temps:
             nvt_integrator.setTemperature(temp)
@@ -298,7 +325,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         tock = time.perf_counter()
         logger.info("Took %1.4f seconds", tock - tic)
 
-        # save positions and velocities to transfer to NPT system
+        # transfer positions and velocities to NPT system
         pos_vel = nvt_sim.context.getState(getPositions=True, getVelocities=True)
         pos, vel = pos_vel.getPositions(), pos_vel.getVelocities()
 
@@ -314,6 +341,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         logger.info("Took %1.4f seconds", tock - tic)
 
         # Production
+        _add_reporter(npt_sim)
         for iteration in range(alchemical_system.niter):
             logger.info(
                 "Propagating iteration %d/%d in window %d/%d",
@@ -334,9 +362,20 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                     steric_l_j,
                     electrostatic_l_j,
                 )
+                logger.debug(
+                    "context electrostatics lambda: %1.4f",
+                    alchemical_system.NPT_compound_state.lambda_electrostatics,
+                )
                 state = npt_sim.context.getState(getEnergy=True)
                 volume = state.getPeriodicBoxVolume()
+                logger.debug("Volume energy: %s", volume)
                 potential = state.getPotentialEnergy() / AVOGADRO_CONSTANT_NA
+                logger.debug("Potential energy: %s", potential)
+                logger.debug("Beta: %s", beta)
+                logger.debug(
+                    "beta * (potential + alchemical_system.pressure * volume): %s",
+                    beta * (potential + alchemical_system.pressure * volume),
+                )
                 u_kln[i, j, iteration] = beta * (
                     potential + alchemical_system.pressure * volume
                 )
@@ -347,6 +386,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                 steric_l_i,
                 electrostatic_l_i,
             )
+        _remove_reporters(npt_sim)
     # Subsample data to extract uncorrelated equilibrium timeseries
     N_k = np.zeros([nstates], np.int32)  # number of uncorrelated samples
     for k in range(nstates):
@@ -399,6 +439,11 @@ def main():
     )
 
     lambda_scheme = LambdaScheme(cfg.sterics_lambdas, cfg.electrostatics_lambdas)
+    logger.debug(
+        "Lambda Scheme: {}".format(" \n".join(map(str, lambda_scheme._lambda_scheme)))
+    )
+
+    logger.info("Beginning simulation")
     run_simulation(alchemical_system, lambda_scheme)
 
 

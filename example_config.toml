@@ -1,10 +1,12 @@
 [system-settings]
-temperature = { target = 300.0, unit = "kelvin" }
+temperature = { target = 298.0, unit = "kelvin" }
 pressure = { target = 1.0, unit = "atmospheres" }
 time_step = { target = 2.0, unit = "femtoseconds" }
-equilibration_per_window = 1024
-sampling_per_window = 500
-sterics_lambdas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-electrostatics_lambdas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+equilibration_per_window = 50_000
+sampling_per_window = 128
+# sterics_lambdas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+# electrostatics_lambdas = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+sterics_lambdas = [1.0, 0.85714286, 0.71428571, 0.57142857, 0.42857143, 0.28571429, 0.14285714, 0.0]
+electrostatics_lambdas = [1.0, 0.85714286, 0.71428571, 0.57142857, 0.42857143, 0.28571429, 0.14285714, 0.0]
 file_name = "./ethanol.pdb"
 smiles = "CCO"
