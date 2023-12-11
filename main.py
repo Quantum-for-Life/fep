@@ -123,6 +123,7 @@ class AlchemicalSystem:
         forcefield: openmm.app.ForceField,
         system_settings: config.SystemSettings,
     ):
+        self.logger = logging.getLogger(__name__)
         self.pressure = system_settings.pressure
         self.temperature = system_settings.temperature
         self.time_step = system_settings.time_step
@@ -131,7 +132,12 @@ class AlchemicalSystem:
         self.niter = system_settings.sampling_per_window
 
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
-        modeller.addSolvent(forcefield, padding=1.1 * nanometer, model="tip4pew")
+        modeller.addSolvent(
+            forcefield,
+            padding=1.6 * nanometer,
+            model="tip3p",
+            boxShape="dodecahedron",
+        )
         self.topology = modeller.topology
         self.og_positions = modeller.positions
 
@@ -142,15 +148,19 @@ class AlchemicalSystem:
         system = forcefield.createSystem(
             self.topology,
             nonbondedMethod=PME,
-            nonbondedCutoff=1.0 * nanometer,
+            nonbondedCutoff=1.1 * nanometer,
             switchDistance=0.9 * nanometer,
             constraints=HBonds,
             rigidWater=True,
-            hydrogenMass=3.0 * amu,
+            hydrogenMass=1.5 * amu,
         )
-        logging.info(msg="Default box vectors")
+
+        # u, w, v = modeller.topology.getPeriodicBoxVectors()
+        # system.setDefaultPeriodicBoxVectors(u, w, v)
+        self.logger.info(msg="Default box vectors")
         for axis in system.getDefaultPeriodicBoxVectors():
-            logging.info(axis)
+            self.logger.info(axis)
+        self.pbv = system.getDefaultPeriodicBoxVectors()
 
         factory = alchemy.AbsoluteAlchemicalFactory()
         alchemical_region = alchemy.AlchemicalRegion(
@@ -209,6 +219,9 @@ def load_small_molecule(
     file_name: PosixPath, smiles: str, forcefield: openmm.app.ForceField
 ) -> None:
     logger = logging.getLogger(__name__)
+    logger.debug(
+        "Available GAFF force fields: %s", GAFFTemplateGenerator.INSTALLED_FORCEFIELDS
+    )
 
     try:
         if file_name.suffix == ".pdb":
@@ -219,8 +232,10 @@ def load_small_molecule(
         logger.exception("ValueError")
         raise
 
-    molecule = Molecule.from_smiles(f"{smiles}")
+    # molecule = Molecule.from_smiles(f"{smiles}")
+    molecule = Molecule.from_file("ethanol.mol")
     gaff = GAFFTemplateGenerator(molecules=molecule)
+    logger.info("Using the following GAFF force field: %s", gaff.forcefield)
     forcefield.registerTemplateGenerator(gaff.generator)
 
     return loaded_molecule
@@ -253,6 +268,17 @@ def _add_reporter(simulation: openmm.app.Simulation):
             separator="\t",
         )
     )
+    simulation.reporters.append(PDBReporter("output.pdb", 512))
+    # simulation.reporters.append(
+    #     openmm.app.StateDataReporter(
+    #         "md_log.txt",
+    #         512,
+    #         step=True,
+    #         potentialEnergy=True,
+    #         temperature=True,
+    #         volume=True,
+    #     )
+    # )
 
 
 def _remove_reporters(simulation: openmm.app.Simulation) -> None:
@@ -299,7 +325,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         )
 
         # init size of box, NVT never changes so dont need to init every state
-        # npt_sim.context.setPeriodicBoxVectors(*alch_sys.PBV)
+        npt_sim.context.setPeriodicBoxVectors(*alchemical_system.pbv)
 
         _add_reporter(nvt_sim)
         _add_reporter(npt_sim)
@@ -339,6 +365,8 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         npt_sim.step(npt_steps)
         tock = time.perf_counter()
         logger.info("Took %1.4f seconds", tock - tic)
+        _remove_reporters(nvt_sim)
+        _remove_reporters(npt_sim)
 
         # Production
         _add_reporter(npt_sim)
@@ -387,6 +415,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                 electrostatic_l_i,
             )
         _remove_reporters(npt_sim)
+
     # Subsample data to extract uncorrelated equilibrium timeseries
     N_k = np.zeros([nstates], np.int32)  # number of uncorrelated samples
     for k in range(nstates):
@@ -431,7 +460,7 @@ def main():
     cfg = config.load_config(args.config)
     logger.info(f"Configuration loaded and validated: {cfg}")
 
-    forcefield = ForceField("tip4pew.xml")
+    forcefield = ForceField("tip3p.xml")
     loaded_molecule = load_small_molecule(cfg.file_name, cfg.smiles, forcefield)
 
     alchemical_system = AlchemicalSystem(
