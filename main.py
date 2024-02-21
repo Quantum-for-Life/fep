@@ -1,5 +1,5 @@
 from pathlib import PosixPath
-from typing import Tuple, Iterator, Type
+from typing import Tuple, Iterator, Type, List, TypeAlias
 import argparse
 import config
 import copy
@@ -10,6 +10,7 @@ import time
 
 from pymbar import MBAR, timeseries
 import numpy as np
+import numpy.typing import npt
 from openff.toolkit import Molecule
 import mdtraj
 import openmmtools
@@ -50,9 +51,14 @@ from openmm.unit import (
 )
 
 from config import SystemSettings
+from lmlp import lMLP
 
 STEPS_PER_ITER: int = 1024
 INITIAL_TEMPERATURE = 50
+
+BOHR2ANGSTROM = 0.529177210903  # CODATA 2018
+HARTREE2EV = 27.211386245988  # CODATA 2018
+KJMOL2EV = 0.1 / 6.02214076 / 1.602176634  # CODATA 2018
 
 
 def setup_logging(level: str) -> logging.Logger:
