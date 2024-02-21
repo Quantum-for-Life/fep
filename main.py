@@ -236,6 +236,9 @@ class AlchemicalSystem:
         # Prime OpenMMtools to anticipate systems with barostats
         self.NPT_compound_state.pressure = self.pressure
 
+        self.total_n_atoms = self.topology.getNumAtoms()
+        self.small_molecule_n_atoms = len(small_molecule_atoms)
+
     def build_simulation(
         self, system: openmm.System
     ) -> Tuple[openmm.app.Simulation, Type[openmm.openmm.Integrator]]:
