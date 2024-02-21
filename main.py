@@ -45,6 +45,8 @@ from openmm.unit import (
     kilocalories_per_mole,
     nanometer,
     picoseconds,
+    kilojoules,
+    mole,
 )
 
 from config import SystemSettings
@@ -77,6 +79,30 @@ def setup_logging(level: str) -> logging.Logger:
     return logger
 
 
+class CustomReporter(object):
+    def __init__(self, file: str, reportInterval: int):
+        self._out = open(file, "w")
+        self._reportInterval = reportInterval
+
+    def __del__(self):
+        self._out.close()
+
+    def describeNextReport(self, simulation):
+        steps = self._reportInterval - simulation.currentStep % self._reportInterval
+        return (steps, False, False, True, True, None)
+
+    def report(self, simulation, state):
+        forces = state.getForces().value_in_unit(kilojoules / mole / nanometer)
+        step_count = state.getStepCount()
+        self._out.write(f"{step_count}\n")
+        kinetic_energy = state.getKineticEnergy()
+        self._out.write(f"kinetic energy: {kinetic_energy}\n")
+        potential_energy = state.getPotentialEnergy()
+        self._out.write(f"potential energy: {potential_energy}\n")
+        for f in forces:
+            self._out.write("%g %g %g\n" % (f[0], f[1], f[2]))
+
+
 class LambdaScheme:
     def __init__(
         self,
@@ -100,9 +126,6 @@ class LambdaScheme:
 
     # @property
     # def lambda_scheme(self):
-    #     return self._lambda_scheme
-
-    # def __repr__(self):
     #     return self._lambda_scheme
 
     def __len__(self) -> int:
@@ -134,9 +157,8 @@ class AlchemicalSystem:
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
         modeller.addSolvent(
             forcefield,
-            padding=1.6 * nanometer,
+            padding=1.5 * nanometer,
             model="tip3p",
-            boxShape="dodecahedron",
         )
         self.topology = modeller.topology
         self.og_positions = modeller.positions
@@ -152,7 +174,7 @@ class AlchemicalSystem:
             switchDistance=0.9 * nanometer,
             constraints=HBonds,
             rigidWater=True,
-            hydrogenMass=1.5 * amu,
+            hydrogenMass=2.0 * amu,
         )
 
         # u, w, v = modeller.topology.getPeriodicBoxVectors()
@@ -162,7 +184,9 @@ class AlchemicalSystem:
             self.logger.info(axis)
         self.pbv = system.getDefaultPeriodicBoxVectors()
 
-        factory = alchemy.AbsoluteAlchemicalFactory()
+        factory = alchemy.AbsoluteAlchemicalFactory(
+            alchemical_pme_treatment="direct-space"
+        )
         alchemical_region = alchemy.AlchemicalRegion(
             alchemical_atoms=small_molecule_atoms,
             annihilate_electrostatics=True,
@@ -172,7 +196,7 @@ class AlchemicalSystem:
             softcore_a=1.0,
             softcore_b=1.0,
             softcore_c=6.0,
-            softcore_beta=0.0,  # 0.0 turns off softcore scaling of electrostatics (default)
+            softcore_beta=1.0,  # 0.0 turns off softcore scaling of electrostatics (default)
         )
         self.NVT_alchemical_system = factory.create_alchemical_system(
             reference_system=system, alchemical_regions=alchemical_region
@@ -234,9 +258,11 @@ def load_small_molecule(
 
     # molecule = Molecule.from_smiles(f"{smiles}")
     molecule = Molecule.from_file("ethanol.mol")
+    molecule.assign_partial_charges("am1bcc")
     gaff = GAFFTemplateGenerator(molecules=molecule)
     logger.info("Using the following GAFF force field: %s", gaff.forcefield)
     forcefield.registerTemplateGenerator(gaff.generator)
+    logger.info("Partial charges of molecule: %s", molecule.partial_charges)
 
     return loaded_molecule
 
@@ -252,7 +278,7 @@ def _apply_context(
     compound_state.apply_to_context(context)
 
 
-def _add_reporter(simulation: openmm.app.Simulation):
+def _add_reporter(simulation: openmm.app.Simulation, el: float, sl: float):
     simulation.reporters.append(
         openmm.app.StateDataReporter(
             stdout,
@@ -268,17 +294,8 @@ def _add_reporter(simulation: openmm.app.Simulation):
             separator="\t",
         )
     )
-    simulation.reporters.append(PDBReporter("output.pdb", 512))
-    # simulation.reporters.append(
-    #     openmm.app.StateDataReporter(
-    #         "md_log.txt",
-    #         512,
-    #         step=True,
-    #         potentialEnergy=True,
-    #         temperature=True,
-    #         volume=True,
-    #     )
-    # )
+    simulation.reporters.append(PDBReporter(f"output_el_{el}_sl_{sl}.pdb", 100))
+    simulation.reporters.append(CustomReporter(f"forces_el_{el}_sl_{sl}.txt", 100))
 
 
 def _remove_reporters(simulation: openmm.app.Simulation) -> None:
@@ -299,6 +316,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     npt_sim, npt_integrator = alchemical_system.build_simulation(
         alchemical_system.NPT_alchemical_system
     )
+
     nvt_steps = int(alchemical_system.equili_steps * 0.01)
     npt_steps = int(alchemical_system.equili_steps)
 
@@ -327,8 +345,8 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         # init size of box, NVT never changes so dont need to init every state
         npt_sim.context.setPeriodicBoxVectors(*alchemical_system.pbv)
 
-        _add_reporter(nvt_sim)
-        _add_reporter(npt_sim)
+        # _add_reporter(nvt_sim, el=-0.0, sl=-0.0)
+        # _add_reporter(npt_sim, el=-0.0, sl=-0.0)
 
         # preproduction: minimize and equilibriate
         logger.info("Minimizing")
@@ -369,7 +387,12 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         _remove_reporters(npt_sim)
 
         # Production
-        _add_reporter(npt_sim)
+        # kT = (
+        #     AVOGADRO_CONSTANT_NA
+        #     * BOLTZMANN_CONSTANT_kB
+        #     * npt_integrator.getTemperature()
+        # )
+        _add_reporter(npt_sim, el=electrostatic_l_i, sl=steric_l_i)
         for iteration in range(alchemical_system.niter):
             logger.info(
                 "Propagating iteration %d/%d in window %d/%d",
@@ -396,10 +419,8 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                 )
                 state = npt_sim.context.getState(getEnergy=True)
                 volume = state.getPeriodicBoxVolume()
-                logger.debug("Volume energy: %s", volume)
+                logger.debug("Volume: %s", volume)
                 potential = state.getPotentialEnergy() / AVOGADRO_CONSTANT_NA
-                logger.debug("Potential energy: %s", potential)
-                logger.debug("Beta: %s", beta)
                 logger.debug(
                     "beta * (potential + alchemical_system.pressure * volume): %s",
                     beta * (potential + alchemical_system.pressure * volume),
@@ -407,6 +428,8 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                 u_kln[i, j, iteration] = beta * (
                     potential + alchemical_system.pressure * volume
                 )
+                # u_kln[i, j, iteration] = state.getPotentialEnergy() / kT
+
             # recover alchemical state
             _apply_context(
                 alchemical_system.NPT_compound_state,
