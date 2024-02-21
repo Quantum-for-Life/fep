@@ -47,6 +47,7 @@ from openmm.unit import (
     nanometer,
     picoseconds,
     kilojoules,
+    kilojoules_per_mole,
     mole,
 )
 
@@ -59,6 +60,10 @@ INITIAL_TEMPERATURE = 50
 BOHR2ANGSTROM = 0.529177210903  # CODATA 2018
 HARTREE2EV = 27.211386245988  # CODATA 2018
 KJMOL2EV = 0.1 / 6.02214076 / 1.602176634  # CODATA 2018
+MM_CHARGES = {
+    "H": 0.417,
+    "O": -0.834,
+}
 
 
 def setup_logging(level: str) -> logging.Logger:
@@ -455,6 +460,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     # pymbar versions > 3.0.3. See this issue: https://github.com/choderalab/pymbar/issues/419
     results = mbar.compute_free_energy_differences(compute_uncertainty=True)
 
+    # Default, units of energy is kj/mol
     logger.info(
         "Free energy change to insert a particle = %1.16f",
         results["Delta_f"][nstates - 1, 0],
