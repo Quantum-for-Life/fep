@@ -10,7 +10,7 @@ import time
 
 from pymbar import MBAR, timeseries
 import numpy as np
-import numpy.typing import npt
+import numpy.typing as npt
 from openff.toolkit import Molecule
 import mdtraj
 import openmmtools
@@ -393,11 +393,6 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         _remove_reporters(npt_sim)
 
         # Production
-        # kT = (
-        #     AVOGADRO_CONSTANT_NA
-        #     * BOLTZMANN_CONSTANT_kB
-        #     * npt_integrator.getTemperature()
-        # )
         _add_reporter(npt_sim, el=electrostatic_l_i, sl=steric_l_i)
         for iteration in range(alchemical_system.niter):
             logger.info(
