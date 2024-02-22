@@ -21,6 +21,7 @@ from openmm.app import (
     PDBFile,
     PDBReporter,
     PME,
+    NoCutoff,
     Simulation,
     StateDataReporter,
 )
@@ -161,14 +162,14 @@ class AlchemicalSystem:
         self.pressure = system_settings.pressure
         self.temperature = system_settings.temperature
         self.time_step = system_settings.time_step
-        self.friction = 1 / picoseconds
+        self.friction = 0.0 / picoseconds
         self.equili_steps = system_settings.equilibration_per_window
         self.niter = system_settings.sampling_per_window
 
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
         modeller.addSolvent(
             forcefield,
-            padding=1.5 * nanometer,
+            padding=1.6 * nanometer,
             model="tip3p",
         )
         self.topology = modeller.topology
@@ -180,9 +181,9 @@ class AlchemicalSystem:
 
         system = forcefield.createSystem(
             self.topology,
-            nonbondedMethod=PME,
-            nonbondedCutoff=1.1 * nanometer,
-            switchDistance=0.9 * nanometer,
+            nonbondedMethod=NoCutoff,
+            nonbondedCutoff=1.9 * nanometer,
+            switchDistance=1.5 * nanometer,
             constraints=HBonds,
             rigidWater=True,
             hydrogenMass=2.0 * amu,
@@ -226,15 +227,15 @@ class AlchemicalSystem:
             thermodynamic_state=ts, composable_states=composable_states
         )
 
-        self.NPT_alchemical_system = copy.deepcopy(self.NVT_alchemical_system)
-        self.NPT_compound_state = copy.deepcopy(self.NVT_compound_state)
-
-        # add barostat and set presssure
-        self.NPT_alchemical_system.addForce(
-            MonteCarloBarostat(self.pressure, self.temperature, 25)
-        )
-        # Prime OpenMMtools to anticipate systems with barostats
-        self.NPT_compound_state.pressure = self.pressure
+        # self.NPT_alchemical_system = copy.deepcopy(self.NVT_alchemical_system)
+        # self.NPT_compound_state = copy.deepcopy(self.NVT_compound_state)
+        #
+        # # add barostat and set presssure
+        # self.NPT_alchemical_system.addForce(
+        #     MonteCarloBarostat(self.pressure, self.temperature, 25)
+        # )
+        # # Prime OpenMMtools to anticipate systems with barostats
+        # self.NPT_compound_state.pressure = self.pressure
 
         self.total_n_atoms = self.topology.getNumAtoms()
         self.small_molecule_n_atoms = len(small_molecule_atoms)
@@ -327,12 +328,29 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     nvt_sim, nvt_integrator = alchemical_system.build_simulation(
         alchemical_system.NVT_alchemical_system
     )
-    npt_sim, npt_integrator = alchemical_system.build_simulation(
-        alchemical_system.NPT_alchemical_system
-    )
+    # npt_sim, npt_integrator = alchemical_system.build_simulation(
+    #     alchemical_system.NPT_alchemical_system
+    # )
 
     nvt_steps = int(alchemical_system.equili_steps * 0.01)
     npt_steps = int(alchemical_system.equili_steps)
+
+    # initialize stuff for MLP
+    n_atoms = alchemical_system.total_n_atoms
+    n_atoms_sys = alchemical_system.small_molecule_n_atoms
+    generalization_setting_file = "../from_marco/model/MLP_EtOH.ini"
+    lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+
+    # Array with 1.0 for QM atoms and 2.0 for MM atoms
+    atomic_classes = np.ones(n_atoms)
+    atomic_classes[n_atoms_sys:] += 1.0
+
+    # Array with atomic charges of MM atoms
+    atomic_charges = np.zeros(n_atoms)
+    elements = np.array([str(atom.element.symbol) for atom in nvt_sim.topology.atoms()])
+    atomic_charges[n_atoms_sys:] = np.array(
+        [MM_CHARGES[ele] for ele in elements[n_atoms_sys:]]
+    )
 
     # Iterate over alchemical states
     for i, (steric_l_i, electrostatic_l_i) in enumerate(lambda_scheme):
@@ -340,7 +358,7 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         logger.debug("Electrostatics lambda i: %1.3f", electrostatic_l_i)
         # init position of atoms
         nvt_sim.context.setPositions(alchemical_system.og_positions)
-        npt_sim.context.setPositions(alchemical_system.og_positions)
+        # npt_sim.context.setPositions(alchemical_system.og_positions)
 
         # init lambda state
         _apply_context(
@@ -349,15 +367,15 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
             steric_l_i,
             electrostatic_l_i,
         )
-        _apply_context(
-            alchemical_system.NPT_compound_state,
-            npt_sim.context,
-            steric_l_i,
-            electrostatic_l_i,
-        )
+        # _apply_context(
+        #     alchemical_system.NPT_compound_state,
+        #     npt_sim.context,
+        #     steric_l_i,
+        #     electrostatic_l_i,
+        # )
 
         # init size of box, NVT never changes so dont need to init every state
-        npt_sim.context.setPeriodicBoxVectors(*alchemical_system.pbv)
+        # npt_sim.context.setPeriodicBoxVectors(*alchemical_system.pbv)
 
         # _add_reporter(nvt_sim, el=-0.0, sl=-0.0)
         # _add_reporter(npt_sim, el=-0.0, sl=-0.0)
@@ -389,19 +407,22 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
 
         # NPT
         # Set equilibriated pos and vel in NPT context
-        npt_sim.context.setPositions(pos)
-        npt_sim.context.setVelocities(vel)
+        # npt_sim.context.setPositions(pos)
+        # npt_sim.context.setVelocities(vel)
+        nvt_sim.context.setPositions(pos)
+        nvt_sim.context.setVelocities(vel)
 
-        logger.info("Performing NPT equilibration for %s", npt_steps * 2 * femtoseconds)
-        tic = time.perf_counter()
-        npt_sim.step(npt_steps)
-        tock = time.perf_counter()
-        logger.info("Took %1.4f seconds", tock - tic)
-        _remove_reporters(nvt_sim)
-        _remove_reporters(npt_sim)
+        # logger.info("Performing NPT equilibration for %s", npt_steps * 2 * femtoseconds)
+        # tic = time.perf_counter()
+        # npt_sim.step(npt_steps)
+        nvt_sim.step(npt_steps)
+        # tock = time.perf_counter()
+        # logger.info("Took %1.4f seconds", tock - tic)
+        # _remove_reporters(nvt_sim)
+        # _remove_reporters(npt_sim)
 
         # Production
-        _add_reporter(npt_sim, el=electrostatic_l_i, sl=steric_l_i)
+        # _add_reporter(npt_sim, el=electrostatic_l_i, sl=steric_l_i)
         for iteration in range(alchemical_system.niter):
             logger.info(
                 "Propagating iteration %d/%d in window %d/%d",
@@ -411,42 +432,83 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                 len(lambda_scheme),
             )
             # propagate system in current state
-            npt_sim.step(STEPS_PER_ITER)
+            # npt_sim.step(STEPS_PER_ITER)
+            nvt_sim.step(STEPS_PER_ITER)
 
             for j, (steric_l_j, electrostatic_l_j) in enumerate(lambda_scheme):
                 logger.debug("Sterics lambda j: %1.3f", steric_l_j)
                 logger.debug("Electrostatics lambda j: %1.3f", electrostatic_l_j)
-                _apply_context(
-                    alchemical_system.NPT_compound_state,
-                    npt_sim.context,
-                    steric_l_j,
-                    electrostatic_l_j,
-                )
-                logger.debug(
-                    "context electrostatics lambda: %1.4f",
-                    alchemical_system.NPT_compound_state.lambda_electrostatics,
-                )
-                state = npt_sim.context.getState(getEnergy=True)
-                volume = state.getPeriodicBoxVolume()
-                logger.debug("Volume: %s", volume)
-                potential = state.getPotentialEnergy() / AVOGADRO_CONSTANT_NA
-                logger.debug(
-                    "beta * (potential + alchemical_system.pressure * volume): %s",
-                    beta * (potential + alchemical_system.pressure * volume),
-                )
+
+                # if we're at the end-states, we need to correct with MLP
+                USE_MLP = True
+                if (
+                    (steric_l_j == 1.0 and electrostatic_l_j == 1.0)
+                    or (steric_l_j == 0.0 and electrostatic_l_j == 0.0)
+                ) and USE_MLP:
+                    logger.debug("Fully interacting or fully decoupled")
+                    # state = npt_sim.context.getState(getEnergy=True, getPositions=True)
+                    state = nvt_sim.context.getState(getEnergy=True, getPositions=True)
+                    positions = state.getPositions(asNumpy=True).value_in_unit(
+                        nanometer
+                    )
+                    positions = np.array(positions).astype(float) * 10.0 / BOHR2ANGSTROM
+                    logger.debug("Starting predict..")
+                    logger.debug(f"positions shape: {positions.shape}")
+                    logger.debug(f"positions first element: {positions[0]}")
+                    logger.debug(f"elements shape: {elements.shape}")
+                    logger.debug(f"elements first element: {elements[0]}")
+                    logger.debug(f"atomic_classes shape: {atomic_classes.shape}")
+                    logger.debug(f"atomic_classes first element: {atomic_classes[0]}")
+                    logger.debug(f"atomic_charges shape: {atomic_charges.shape}")
+                    logger.debug(f"atomic_charges first element: {atomic_charges[0]}")
+                    potential, _ = lmlp.predict(
+                        elements,
+                        positions,
+                        atomic_classes=atomic_classes,
+                        atomic_charges=atomic_charges,
+                        calc_forces=False,
+                    )
+                    logger.debug(f"Raw predicted potential energy: {potential}")
+                    potential *= 1000
+                    potential *= 2625.5002
+                    logger.debug(f"Predicted potential energy: {potential}")
+                    potential /= AVOGADRO_CONSTANT_NA
+                    logger.debug(
+                        f"Actual potential energy: {state.getPotentialEnergy()}"
+                    )
+                    volume = state.getPeriodicBoxVolume()
+                    continue
+                else:
+                    # otherwise, grab the normal energies
+                    _apply_context(
+                        # alchemical_system.NPT_compound_state,
+                        alchemical_system.NVT_compound_state,
+                        # npt_sim.context,
+                        nvt_sim.context,
+                        steric_l_j,
+                        electrostatic_l_j,
+                    )
+                    # state = npt_sim.context.getState(getEnergy=True)
+                    state = nvt_sim.context.getState(getEnergy=True)
+                    volume = state.getPeriodicBoxVolume()
+                    logger.debug("Volume: %s", volume)
+                    potential = state.getPotentialEnergy() / AVOGADRO_CONSTANT_NA
+
                 u_kln[i, j, iteration] = beta * (
                     potential + alchemical_system.pressure * volume
                 )
-                # u_kln[i, j, iteration] = state.getPotentialEnergy() / kT
 
             # recover alchemical state
             _apply_context(
-                alchemical_system.NPT_compound_state,
-                npt_sim.context,
+                # alchemical_system.NPT_compound_state,
+                alchemical_system.NVT_compound_state,
+                # npt_sim.context,
+                nvt_sim.context,
                 steric_l_i,
                 electrostatic_l_i,
             )
-        _remove_reporters(npt_sim)
+        # _remove_reporters(npt_sim)
+        _remove_reporters(nvt_sim)
 
     # Subsample data to extract uncorrelated equilibrium timeseries
     N_k = np.zeros([nstates], np.int32)  # number of uncorrelated samples
