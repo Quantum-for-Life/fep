@@ -1,33 +1,25 @@
 from pathlib import PosixPath
-from typing import Tuple, Iterator, Type, List, TypeAlias
+from sys import stdout
+from typing import Iterator, Type, TypeAlias
 import argparse
 import config
 import copy
 import logging
 import sys
-from sys import stdout
 import time
 
-from pymbar import MBAR, timeseries
-import numpy as np
-import numpy.typing as npt
 from openff.toolkit import Molecule
-import mdtraj
-import openmmtools
 from openmm.app import (
     ForceField,
     HBonds,
     Modeller,
+    NoCutoff,
     PDBFile,
     PDBReporter,
     PME,
-    NoCutoff,
     Simulation,
     StateDataReporter,
 )
-from openmmforcefields.generators import GAFFTemplateGenerator
-from openmmtools import alchemy
-import openmm
 from openmm import (
     CustomNonbondedForce,
     LangevinIntegrator,
@@ -39,18 +31,27 @@ from openmm import (
 from openmm.unit import (
     AVOGADRO_CONSTANT_NA,
     BOLTZMANN_CONSTANT_kB,
+    Quantity,
     amu,
     angstrom,
     atmospheres,
     femtoseconds,
     kelvin,
     kilocalories_per_mole,
-    nanometer,
-    picoseconds,
     kilojoules,
     kilojoules_per_mole,
     mole,
+    nanometer,
+    picoseconds,
 )
+from openmmforcefields.generators import GAFFTemplateGenerator
+from openmmtools import alchemy
+from pymbar import MBAR, timeseries
+import mdtraj
+import numpy as np
+import numpy.typing as npt
+import openmm
+import openmmtools
 
 from config import SystemSettings
 from lmlp import lMLP
@@ -162,14 +163,32 @@ class AlchemicalSystem:
         self.pressure = system_settings.pressure
         self.temperature = system_settings.temperature
         self.time_step = system_settings.time_step
-        self.friction = 0.0 / picoseconds
+        self.friction = 1.0 / picoseconds
         self.equili_steps = system_settings.equilibration_per_window
         self.niter = system_settings.sampling_per_window
+        self.hydrogen_mass = 2.0 * amu
+        self.nonbonded_cutoff = 1.3 * nanometer
+        # self.nonbonded_method = NoCutoff
+        self.nonbonded_method = PME
+        self.switch_distance = 0.9 * nanometer
 
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
+        self.only_etoh_system = forcefield.createSystem(
+            modeller.topology,
+            # nonbondedMethod=self.nonbonded_method,
+            nonbondedMethod=NoCutoff,
+            nonbondedCutoff=self.nonbonded_cutoff,
+            switchDistance=self.switch_distance,
+            constraints=HBonds,
+            rigidWater=True,
+            hydrogenMass=self.hydrogen_mass,
+        )
+        self.only_etoh_topology = modeller.topology
+        self.only_etoh_position = modeller.positions
+
         modeller.addSolvent(
             forcefield,
-            padding=1.6 * nanometer,
+            padding=1.5 * nanometer,
             model="tip3p",
         )
         self.topology = modeller.topology
@@ -181,12 +200,12 @@ class AlchemicalSystem:
 
         system = forcefield.createSystem(
             self.topology,
-            nonbondedMethod=NoCutoff,
-            nonbondedCutoff=1.9 * nanometer,
-            switchDistance=1.5 * nanometer,
+            nonbondedMethod=self.nonbonded_method,
+            nonbondedCutoff=self.nonbonded_cutoff,
+            switchDistance=self.switch_distance,
             constraints=HBonds,
             rigidWater=True,
-            hydrogenMass=2.0 * amu,
+            hydrogenMass=self.hydrogen_mass,
         )
 
         # u, w, v = modeller.topology.getPeriodicBoxVectors()
@@ -201,6 +220,8 @@ class AlchemicalSystem:
         )
         alchemical_region = alchemy.AlchemicalRegion(
             alchemical_atoms=small_molecule_atoms,
+            # annihilate_electrostatics=False,
+            # annihilate_sterics=False,
             annihilate_electrostatics=True,
             annihilate_sterics=True,
             # default settings
@@ -209,6 +230,9 @@ class AlchemicalSystem:
             softcore_b=1.0,
             softcore_c=6.0,
             softcore_beta=1.0,  # 0.0 turns off softcore scaling of electrostatics (default)
+        )
+        self.only_etoh_NVT_alchemical_system = factory.create_alchemical_system(
+            reference_system=self.only_etoh_system, alchemical_regions=alchemical_region
         )
         self.NVT_alchemical_system = factory.create_alchemical_system(
             reference_system=system, alchemical_regions=alchemical_region
@@ -227,29 +251,33 @@ class AlchemicalSystem:
             thermodynamic_state=ts, composable_states=composable_states
         )
 
-        # self.NPT_alchemical_system = copy.deepcopy(self.NVT_alchemical_system)
-        # self.NPT_compound_state = copy.deepcopy(self.NVT_compound_state)
-        #
-        # # add barostat and set presssure
-        # self.NPT_alchemical_system.addForce(
-        #     MonteCarloBarostat(self.pressure, self.temperature, 25)
-        # )
-        # # Prime OpenMMtools to anticipate systems with barostats
-        # self.NPT_compound_state.pressure = self.pressure
+        self.NPT_alchemical_system = copy.deepcopy(self.NVT_alchemical_system)
+        self.NPT_compound_state = copy.deepcopy(self.NVT_compound_state)
+
+        # add barostat and set presssure
+        self.NPT_alchemical_system.addForce(
+            MonteCarloBarostat(self.pressure, self.temperature, 25)
+        )
+        # Prime OpenMMtools to anticipate systems with barostats
+        self.NPT_compound_state.pressure = self.pressure
 
         self.total_n_atoms = self.topology.getNumAtoms()
         self.small_molecule_n_atoms = len(small_molecule_atoms)
 
     def build_simulation(
-        self, system: openmm.System
-    ) -> Tuple[openmm.app.Simulation, Type[openmm.openmm.Integrator]]:
+        self,
+        system: openmm.System,
+        topology: openmm.app.topology.Topology,
+        random_seed: int = 42,
+    ) -> tuple[openmm.app.Simulation, Type[openmm.openmm.Integrator]]:
         integrator = LangevinMiddleIntegrator(
             self.temperature, self.friction, self.time_step
         )
+        integrator.setRandomNumberSeed(random_seed)
         platform = openmm.Platform.getPlatformByName("CUDA")
         platformProperties = {"CudaPrecision": "mixed"}
         simulation = openmm.app.Simulation(
-            self.topology, system, integrator, platform, platformProperties
+            topology, system, integrator, platform, platformProperties
         )
         return simulation, integrator
 
@@ -326,7 +354,12 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     beta = 1.0 / (BOLTZMANN_CONSTANT_kB * alchemical_system.temperature)
 
     nvt_sim, nvt_integrator = alchemical_system.build_simulation(
-        alchemical_system.NVT_alchemical_system
+        system=alchemical_system.NVT_alchemical_system,
+        topology=alchemical_system.topology,
+    )
+    npt_sim, npt_integrator = alchemical_system.build_simulation(
+        system=alchemical_system.NPT_alchemical_system,
+        topology=alchemical_system.topology,
     )
     # npt_sim, npt_integrator = alchemical_system.build_simulation(
     #     alchemical_system.NPT_alchemical_system
@@ -356,9 +389,8 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     for i, (steric_l_i, electrostatic_l_i) in enumerate(lambda_scheme):
         logger.debug("Sterics lambda i: %1.3f", steric_l_i)
         logger.debug("Electrostatics lambda i: %1.3f", electrostatic_l_i)
-        # init position of atoms
         nvt_sim.context.setPositions(alchemical_system.og_positions)
-        # npt_sim.context.setPositions(alchemical_system.og_positions)
+        npt_sim.context.setPositions(alchemical_system.og_positions)
 
         # init lambda state
         _apply_context(
@@ -367,15 +399,15 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
             steric_l_i,
             electrostatic_l_i,
         )
-        # _apply_context(
-        #     alchemical_system.NPT_compound_state,
-        #     npt_sim.context,
-        #     steric_l_i,
-        #     electrostatic_l_i,
-        # )
+        _apply_context(
+            alchemical_system.NPT_compound_state,
+            npt_sim.context,
+            steric_l_i,
+            electrostatic_l_i,
+        )
 
         # init size of box, NVT never changes so dont need to init every state
-        # npt_sim.context.setPeriodicBoxVectors(*alchemical_system.pbv)
+        npt_sim.context.setPeriodicBoxVectors(*alchemical_system.pbv)
 
         # _add_reporter(nvt_sim, el=-0.0, sl=-0.0)
         # _add_reporter(npt_sim, el=-0.0, sl=-0.0)
@@ -385,7 +417,10 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         openmm.LocalEnergyMinimizer.minimize(nvt_sim.context)
 
         # NVT
-        logger.info("Performing NVT equilibration for %s", nvt_steps * 2 * femtoseconds)
+        logger.info(
+            "Performing NVT equilibration for %s",
+            nvt_steps * alchemical_system.time_step,
+        )
         tic = time.perf_counter()
 
         # NVT warming
@@ -407,17 +442,20 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
 
         # NPT
         # Set equilibriated pos and vel in NPT context
-        # npt_sim.context.setPositions(pos)
-        # npt_sim.context.setVelocities(vel)
-        nvt_sim.context.setPositions(pos)
-        nvt_sim.context.setVelocities(vel)
+        npt_sim.context.setPositions(pos)
+        npt_sim.context.setVelocities(vel)
+        # nvt_sim.context.setPositions(pos)
+        # nvt_sim.context.setVelocities(vel)
 
-        # logger.info("Performing NPT equilibration for %s", npt_steps * 2 * femtoseconds)
-        # tic = time.perf_counter()
-        # npt_sim.step(npt_steps)
-        nvt_sim.step(npt_steps)
-        # tock = time.perf_counter()
-        # logger.info("Took %1.4f seconds", tock - tic)
+        logger.info(
+            "Performing NPT equilibration for %s",
+            npt_steps * alchemical_system.time_step,
+        )
+        tic = time.perf_counter()
+        npt_sim.step(npt_steps)
+        # nvt_sim.step(npt_steps)
+        tock = time.perf_counter()
+        logger.info("Took %1.4f seconds", tock - tic)
         # _remove_reporters(nvt_sim)
         # _remove_reporters(npt_sim)
 
@@ -432,12 +470,20 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                 len(lambda_scheme),
             )
             # propagate system in current state
-            # npt_sim.step(STEPS_PER_ITER)
-            nvt_sim.step(STEPS_PER_ITER)
+            npt_sim.step(STEPS_PER_ITER)
+            # nvt_sim.step(STEPS_PER_ITER)
 
             for j, (steric_l_j, electrostatic_l_j) in enumerate(lambda_scheme):
-                logger.debug("Sterics lambda j: %1.3f", steric_l_j)
-                logger.debug("Electrostatics lambda j: %1.3f", electrostatic_l_j)
+                # logger.debug("Sterics lambda j: %1.3f", steric_l_j)
+                # logger.debug("Electrostatics lambda j: %1.3f", electrostatic_l_j)
+                _apply_context(
+                    alchemical_system.NPT_compound_state,
+                    # alchemical_system.NVT_compound_state,
+                    npt_sim.context,
+                    # nvt_sim.context,
+                    steric_l_j,
+                    electrostatic_l_j,
+                )
 
                 # if we're at the end-states, we need to correct with MLP
                 USE_MLP = True
@@ -480,18 +526,20 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                     continue
                 else:
                     # otherwise, grab the normal energies
-                    _apply_context(
-                        # alchemical_system.NPT_compound_state,
-                        alchemical_system.NVT_compound_state,
-                        # npt_sim.context,
-                        nvt_sim.context,
-                        steric_l_j,
-                        electrostatic_l_j,
-                    )
-                    # state = npt_sim.context.getState(getEnergy=True)
-                    state = nvt_sim.context.getState(getEnergy=True)
+                    # _apply_context(
+                    #     # alchemical_system.NPT_compound_state,
+                    #     alchemical_system.NVT_compound_state,
+                    #     # npt_sim.context,
+                    #     nvt_sim.context,
+                    #     steric_l_j,
+                    #     electrostatic_l_j,
+                    # )
+                    state = npt_sim.context.getState(getEnergy=True)
+                    # state = nvt_sim.context.getState(getEnergy=True)
                     volume = state.getPeriodicBoxVolume()
-                    logger.debug("Volume: %s", volume)
+                    logger.debug(
+                        f"Non-MLP predicted potential energy: {state.getPotentialEnergy()}"
+                    )
                     potential = state.getPotentialEnergy() / AVOGADRO_CONSTANT_NA
 
                 u_kln[i, j, iteration] = beta * (
@@ -500,10 +548,10 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
 
             # recover alchemical state
             _apply_context(
-                # alchemical_system.NPT_compound_state,
-                alchemical_system.NVT_compound_state,
-                # npt_sim.context,
-                nvt_sim.context,
+                alchemical_system.NPT_compound_state,
+                # alchemical_system.NVT_compound_state,
+                npt_sim.context,
+                # nvt_sim.context,
                 steric_l_i,
                 electrostatic_l_i,
             )
