@@ -167,10 +167,10 @@ class AlchemicalSystem:
         self.equili_steps = system_settings.equilibration_per_window
         self.niter = system_settings.sampling_per_window
         self.hydrogen_mass = 2.0 * amu
-        self.nonbonded_cutoff = 1.3 * nanometer
-        # self.nonbonded_method = NoCutoff
-        self.nonbonded_method = PME
-        self.switch_distance = 0.9 * nanometer
+        self.nonbonded_cutoff = 1.9 * nanometer
+        self.nonbonded_method = NoCutoff
+        # self.nonbonded_method = PME
+        self.switch_distance = 1.5 * nanometer
 
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
         self.only_etoh_system = forcefield.createSystem(
@@ -188,7 +188,8 @@ class AlchemicalSystem:
 
         modeller.addSolvent(
             forcefield,
-            padding=1.5 * nanometer,
+            # padding=2.1 * nanometer,
+            padding=2.6 * nanometer,
             model="tip3p",
         )
         self.topology = modeller.topology
@@ -357,13 +358,16 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
         system=alchemical_system.NVT_alchemical_system,
         topology=alchemical_system.topology,
     )
-    npt_sim, npt_integrator = alchemical_system.build_simulation(
-        system=alchemical_system.NPT_alchemical_system,
-        topology=alchemical_system.topology,
-    )
     # npt_sim, npt_integrator = alchemical_system.build_simulation(
-    #     alchemical_system.NPT_alchemical_system
+    #     system=alchemical_system.NPT_alchemical_system,
+    #     topology=alchemical_system.topology,
     # )
+
+    only_etoh_sim, only_etoh = alchemical_system.build_simulation(
+        system=alchemical_system.only_etoh_NVT_alchemical_system,
+        topology=alchemical_system.only_etoh_topology,
+    )
+    only_etoh_sim.context.setPositions(alchemical_system.only_etoh_position)
 
     nvt_steps = int(alchemical_system.equili_steps * 0.01)
     npt_steps = int(alchemical_system.equili_steps)
@@ -371,8 +375,13 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     # initialize stuff for MLP
     n_atoms = alchemical_system.total_n_atoms
     n_atoms_sys = alchemical_system.small_molecule_n_atoms
-    generalization_setting_file = "../from_marco/model/MLP_EtOH.ini"
-    lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+    # generalization_setting_file = "../2from_marco/model/MLP-EtOH+H2O.ini"
+    # double_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+
+    generalization_setting_file = "../2from_marco/model/MLP-only_EtOH.ini"
+    only_etoh_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+    generalization_setting_file = "../2from_marco/model/MLP-only_EtOH+H2O.ini"
+    etoh_h2o_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
 
     # Array with 1.0 for QM atoms and 2.0 for MM atoms
     atomic_classes = np.ones(n_atoms)
@@ -485,57 +494,124 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
                     electrostatic_l_j,
                 )
 
-                # if we're at the end-states, we need to correct with MLP
                 USE_MLP = True
                 if (
                     (steric_l_j == 1.0 and electrostatic_l_j == 1.0)
                     or (steric_l_j == 0.0 and electrostatic_l_j == 0.0)
                 ) and USE_MLP:
-                    logger.debug("Fully interacting or fully decoupled")
+                    logger.debug(f"{USE_MLP = }")
+                    logger.debug(f"{steric_l_j = }")
+                    logger.debug(f"{electrostatic_l_j = }")
+                    logger.debug("In MLP predictive stage - Interacting")
+                    """
+                    calculated as
+                    E_full = E_only-H20_MM + E_interacting-EtOH_MLP
+                    ^^^ neglects the interaction contribution from water -> EtOH
+
+                    E_full: E of full system (water + EtOH), everything interacting, MM
+                    E_EtOH_MLP: E of EtOH sterically interacting with H2O predicted by MLP
+                    E_no-interaction: E of full system (water + EtOH), only steric interaction, MM
+                    E_EtOH-vac: E of EtOH in vacuum, MM
+                    E_EtOH-vac-MLP: E of EtOH in vacuum, MLP
+
+                    for the interacting system
+                    E_full = E_EtOH_MLP + E_no-interaction - E_EtOH-vac
+
+                    for the noninteracting system
+                    E_full = E_EtOH-vac-MLP + E_no-interaction - E_EtOH-vac
+                    """
                     # state = npt_sim.context.getState(getEnergy=True, getPositions=True)
                     state = nvt_sim.context.getState(getEnergy=True, getPositions=True)
                     positions = state.getPositions(asNumpy=True).value_in_unit(
                         nanometer
                     )
+                    logger.debug(
+                        f"Raw predicted potential energy: {state.getPotentialEnergy()}"
+                    )
                     positions = np.array(positions).astype(float) * 10.0 / BOHR2ANGSTROM
-                    logger.debug("Starting predict..")
-                    logger.debug(f"positions shape: {positions.shape}")
-                    logger.debug(f"positions first element: {positions[0]}")
-                    logger.debug(f"elements shape: {elements.shape}")
-                    logger.debug(f"elements first element: {elements[0]}")
-                    logger.debug(f"atomic_classes shape: {atomic_classes.shape}")
-                    logger.debug(f"atomic_classes first element: {atomic_classes[0]}")
-                    logger.debug(f"atomic_charges shape: {atomic_charges.shape}")
-                    logger.debug(f"atomic_charges first element: {atomic_charges[0]}")
-                    potential, _ = lmlp.predict(
+                    # E_EtOH_MLP, _ = double_lmlp.predict(
+                    E_EtOH_MLP, _ = etoh_h2o_lmlp.predict(
                         elements,
                         positions,
                         atomic_classes=atomic_classes,
                         atomic_charges=atomic_charges,
                         calc_forces=False,
                     )
-                    logger.debug(f"Raw predicted potential energy: {potential}")
-                    potential *= 1000
-                    potential *= 2625.5002
-                    logger.debug(f"Predicted potential energy: {potential}")
-                    potential /= AVOGADRO_CONSTANT_NA
-                    logger.debug(
-                        f"Actual potential energy: {state.getPotentialEnergy()}"
+                    E_EtOH_MLP *= HARTREE2EV / KJMOL2EV
+                    logger.debug(f"{E_EtOH_MLP = }")
+
+                    # steric = steric_l_i
+                    # steric = 1.0
+                    steric = steric_l_j
+                    electrostatic = 0.0
+                    _apply_context(
+                        # alchemical_system.NPT_compound_state,
+                        alchemical_system.NVT_compound_state,
+                        # npt_sim.context,
+                        nvt_sim.context,
+                        steric,
+                        electrostatic,
                     )
+                    # state = npt_sim.context.getState(getEnergy=True, getPositions=True)
+                    state = nvt_sim.context.getState(getEnergy=True, getPositions=True)
+                    E_no_interaction = state.getPotentialEnergy()
+                    logger.debug(
+                        f"{E_no_interaction.value_in_unit(kilojoules_per_mole) = }"
+                    )
+                    only_etoh_sim.context.setPositions(state.getPositions()[:9])
+                    only_etoh_state = only_etoh_sim.context.getState(
+                        getEnergy=True, getPositions=True, getForces=True
+                    )
+                    E_EtOH_vac = only_etoh_state.getPotentialEnergy()
+                    logger.debug(f"{E_EtOH_vac.value_in_unit(kilojoules_per_mole) = }")
+
+                    if steric_l_j == 1.0 and electrostatic_l_j == 1.0:
+                        E_full = (
+                            E_EtOH_MLP
+                            + E_no_interaction.value_in_unit(kilojoules_per_mole)
+                            - E_EtOH_vac.value_in_unit(kilojoules_per_mole)
+                        )
+
+                    if steric_l_j == 0.0 and electrostatic_l_j == 0.0:
+                        # E_EtOH_vac_MLP, _ = double_lmlp.predict(
+                        E_EtOH_vac_MLP, _ = only_etoh_lmlp.predict(
+                            elements[:9],
+                            positions[:9],
+                            atomic_classes=atomic_classes[:9],
+                            atomic_charges=atomic_charges[:9],
+                            calc_forces=False,
+                        )
+                        E_EtOH_vac_MLP *= HARTREE2EV / KJMOL2EV
+                        logger.debug(f"{E_EtOH_vac_MLP = }")
+                        E_full = (
+                            E_EtOH_vac_MLP
+                            + E_no_interaction.value_in_unit(kilojoules_per_mole)
+                            - E_EtOH_vac.value_in_unit(kilojoules_per_mole)
+                        )
+                    potential = E_full
+                    potential = Quantity(potential, unit=kilojoules_per_mole)
+                    potential /= AVOGADRO_CONSTANT_NA
+
+                    logger.debug(f"Predicted potential energy: {E_full}")
+                    # logger.debug(
+                    #     f"Actual potential energy: {state.getPotentialEnergy()}"
+                    # )
                     volume = state.getPeriodicBoxVolume()
-                    continue
+                # if (steric_l_j == 0.0 and electrostatic_l_j == 0.0) and USE_MLP:
+                #     """
+                #     calculated as
+                #
+                #     E_full: E of full system (water + EtOH), everything interacting, MM
+                #     E_EtOH_MLP: E of EtOH sterically interacting with H2O predicted by MLP
+                #     E_no-interaction: E of full system (water + EtOH), only steric interaction, MM
+                #     E_EtOH-vac: E of EtOH in vacuum, MM
+                #
+                #     E_full = E_EtOH-vac-MLP + E_no-interaction - E_EtOH-vac
+                #     """
                 else:
                     # otherwise, grab the normal energies
-                    # _apply_context(
-                    #     # alchemical_system.NPT_compound_state,
-                    #     alchemical_system.NVT_compound_state,
-                    #     # npt_sim.context,
-                    #     nvt_sim.context,
-                    #     steric_l_j,
-                    #     electrostatic_l_j,
-                    # )
-                    state = npt_sim.context.getState(getEnergy=True)
-                    # state = nvt_sim.context.getState(getEnergy=True)
+                    # state = npt_sim.context.getState(getEnergy=True)
+                    state = nvt_sim.context.getState(getEnergy=True)
                     volume = state.getPeriodicBoxVolume()
                     logger.debug(
                         f"Non-MLP predicted potential energy: {state.getPotentialEnergy()}"
