@@ -54,7 +54,9 @@ import openmm
 import openmmtools
 
 from config import SystemSettings
-from lmlp import lMLP
+
+# from lmlp import lMLP
+from new_lmlp import lMLP
 
 STEPS_PER_ITER: int = 1024
 INITIAL_TEMPERATURE = 50
@@ -66,6 +68,39 @@ MM_CHARGES = {
     "H": 0.417,
     "O": -0.834,
 }
+
+
+def dump_info(
+    filename: str,
+    energies,
+    all_forces,
+    all_positions,
+    all_atoms,
+    only_forces: bool,
+):
+    unit = kilojoules_per_mole / nanometer
+    with open(f"{filename}", "w") as fd:
+        for energy, forces, positions, atoms in zip(
+            energies, all_forces, all_positions, all_atoms
+        ):
+            fd.write(f"potential energy: {energy}\n")
+            for force, pos, atom in zip(forces, positions, atoms):
+                if only_forces:
+                    fd.write(
+                        f"{force[0].value_in_unit(unit)} "
+                        + f"{force[1].value_in_unit(unit)} "
+                        + f"{force[2].value_in_unit(unit)}\n"
+                    )
+                else:
+                    fd.write(
+                        f"{atom.element.symbol} "
+                        + f"{pos[0].value_in_unit(nanometer)} "
+                        + f"{pos[1].value_in_unit(nanometer)} "
+                        + f"{pos[2].value_in_unit(nanometer)} "
+                        + f"{force[0].value_in_unit(unit)} "
+                        + f"{force[1].value_in_unit(unit)} "
+                        + f"{force[2].value_in_unit(unit)}\n"
+                    )
 
 
 def setup_logging(level: str) -> logging.Logger:
@@ -168,8 +203,8 @@ class AlchemicalSystem:
         self.niter = system_settings.sampling_per_window
         self.hydrogen_mass = 2.0 * amu
         self.nonbonded_cutoff = 1.9 * nanometer
-        self.nonbonded_method = NoCutoff
-        # self.nonbonded_method = PME
+        # self.nonbonded_method = NoCutoff
+        self.nonbonded_method = PME
         self.switch_distance = 1.5 * nanometer
 
         modeller = Modeller(molecule_file.topology, molecule_file.positions)
@@ -189,7 +224,7 @@ class AlchemicalSystem:
         modeller.addSolvent(
             forcefield,
             # padding=2.1 * nanometer,
-            padding=2.6 * nanometer,
+            padding=2.0 * nanometer,
             model="tip3p",
         )
         self.topology = modeller.topology
@@ -226,10 +261,10 @@ class AlchemicalSystem:
             annihilate_electrostatics=True,
             annihilate_sterics=True,
             # default settings
-            softcore_alpha=0.5,
-            softcore_a=1.0,
-            softcore_b=1.0,
-            softcore_c=6.0,
+            # softcore_alpha=0.5,
+            # softcore_a=1.0,
+            # softcore_b=1.0,
+            # softcore_c=6.0,
             softcore_beta=1.0,  # 0.0 turns off softcore scaling of electrostatics (default)
         )
         self.only_etoh_NVT_alchemical_system = factory.create_alchemical_system(
@@ -378,10 +413,13 @@ def run_simulation(alchemical_system: AlchemicalSystem, lambda_scheme: LambdaSch
     # generalization_setting_file = "../2from_marco/model/MLP-EtOH+H2O.ini"
     # double_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
 
-    generalization_setting_file = "../2from_marco/model/MLP-only_EtOH.ini"
-    only_etoh_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
-    generalization_setting_file = "../2from_marco/model/MLP-only_EtOH+H2O.ini"
-    etoh_h2o_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+    generalization_setting_file = "../3from_marco/model/MLP-EtOH+H2O-Ewaldv2.ini"
+    double_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+
+    # generalization_setting_file = "../2from_marco/model/MLP-only_EtOH.ini"
+    # only_etoh_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
+    # generalization_setting_file = "../2from_marco/model/MLP-only_EtOH+H2O.ini"
+    # etoh_h2o_lmlp = lMLP(generalization_setting_file=generalization_setting_file)
 
     # Array with 1.0 for QM atoms and 2.0 for MM atoms
     atomic_classes = np.ones(n_atoms)

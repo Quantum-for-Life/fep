@@ -1,12 +1,26 @@
 [system-settings]
 temperature = { target = 300.0, unit = "kelvin" }
 pressure = { target = 1.0, unit = "atmospheres" }
-time_step = { target = 0.002, unit = "picoseconds" }
-equilibration_per_window = 200_000
-sampling_per_window = 128
-sterics_lambdas = [1.0, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.0]
-electrostatics_lambdas = [1.0, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.0]
-electrostatics_lambdas = [1.0, 0.9, 0.8, 0.6, 0.4, 0.2, 0.1, 0.0]
+time_step = { target = 1.0, unit = "femtoseconds" }
+
+# equilibration_per_window = 5_000  # test
+# sampling_per_window = 2  # test
+
+# for generating training data
+equilibration_per_window = 50_000
+sampling_per_window = 24
+
+# equilibration_per_window = 50_000
+# sampling_per_window = 16
+
+# equilibration_per_window = 75_000  # slightly longer run
+# sampling_per_window = 20  # slightly longer run
+
+# equilibration_per_window = 100_000  # even longer run
+# sampling_per_window = 24  # even longer run
+sterics_lambdas = [1.0, 0.95, 0.9, 0.8, 0.7, 0.5, 0.3, 0.2, 0.1, 0.0]
+electrostatics_lambdas = [1.0, 0.95, 0.9, 0.8, 0.7, 0.5, 0.3, 0.2, 0.1, 0.0]
+# electrostatics_lambdas = [1.0, 0.9, 0.8, 0.6, 0.4, 0.2, 0.1, 0.0]
 #sterics_lambdas = [1.0, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.0]
 #electrostatics_lambdas = [1.0, 0.95, 0.85714286, 0.71428571, 0.57142857, 0.42857143, 0.28571429, 0.14285714, 0.05, 0.0]
 file_name = "./ethanol.pdb"
